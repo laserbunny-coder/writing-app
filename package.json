@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vite build && node tests/order.mjs && node tests/script.mjs && node tests/stats.mjs && node tests/run.mjs && node tests/alts.mjs && node tests/data.mjs && node tests/sync.mjs && node tests/tidy.mjs && node tests/search.mjs && node tests/history.mjs && node tests/caret.mjs && node tests/files.mjs && node tests/slash.mjs && node tests/worlds.mjs && node tests/structure.mjs && node tests/capture.mjs && node tests/voice.mjs && node tests/share.mjs && node tests/lists.mjs && node tests/daybook.mjs && node tests/review.mjs && node tests/tags.mjs && node tests/production.mjs && node tests/revise.mjs"
+    "test": "vite build && node tests/order.mjs && node tests/script.mjs && node tests/stats.mjs && node tests/run.mjs && node tests/alts.mjs && node tests/data.mjs && node tests/sync.mjs && node tests/tidy.mjs && node tests/search.mjs && node tests/history.mjs && node tests/caret.mjs && node tests/files.mjs && node tests/slash.mjs && node tests/worlds.mjs && node tests/structure.mjs && node tests/capture.mjs && node tests/voice.mjs && node tests/share.mjs && node tests/lists.mjs && node tests/daybook.mjs && node tests/review.mjs && node tests/tags.mjs && node tests/production.mjs && node tests/revise.mjs && node tests/meeting.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

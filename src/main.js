@@ -38,6 +38,7 @@ import { onVoiceChip, switchVoice, voiceText, voiceInfo, knownModes, fetchModes,
 import { takeShares, snapshotPending } from './share.js';
 import { LISTS, listOf, setList, fillList } from './lists.js';
 import { sendToDaybook, sendPending, queueTask } from './daybook.js';
+import { meetingPending, addMeetingFile, meetingFromLine, audioOn, renameSpeaker, speakersOn, mine } from './meeting.js';
 import { DayReview, getReview } from './review.js';
 import { TagsPage } from './tags.js';
 import { FONTS, FONT_GROUPS, DEFAULT_FONT, setFont, currentFont, loadPreviews } from './fonts.js';
@@ -3041,6 +3042,8 @@ const commands = [
   { group: 'tidy', label: 'This chapter: rename, move or trash…', keys: '', run: async () => popMenu(null, await chapterMenu({ id: state.chapterId }), menuSpot()), when: () => writing() && !!state.chapterId },
   ...Object.entries(LISTS).map(([list, name]) => ({ group: 'page', label: `Make this page a ${name.toLowerCase()} (Claude links each title)`, keys: '', run: () => makeList(list), when: () => inNotebook() && notebook.page?.kind === 'page' && listOf(notebook.page) !== list })),
   { group: 'tidy', label: 'Review the day with Claude (what goes to Daybook, what to keep thinking about)', keys: '', run: () => dayReview.run(), when: () => inNotebook() && notebook.isDay },
+  { group: 'new', label: 'Make meeting notes from a recording (summary, decisions, tasks, who said what)…', keys: '', run: () => setTimeout(makeMeeting, 120) },
+  { group: 'tidy', label: 'Fix a speaker’s name in this meeting…', keys: '', run: () => setTimeout(fixSpeaker, 120), when: () => inNotebook() && !!notebook.page?.fields?.meeting },
   { group: 'tidy', label: 'Send this line to Daybook (a task in its Inbox, linked back here)', keys: '', run: sendLineToDaybook, when: () => inNotebook() && !!notebook.currentLine() },
   { group: 'page', label: 'Stop Claude linking titles on this page', keys: '', run: () => makeList(null), when: () => inNotebook() && !!listOf(notebook.page) },
   { group: 'tidy', label: 'This page: rename, move to a world or trash…', keys: '', run: async () => popMenu(null, await pageMenu(notebook.page), menuSpot()), when: () => inNotebook() && notebook.page?.kind === 'page' },
@@ -3524,7 +3527,56 @@ const canAskServer = () => !!window.__claude || (!!sync.user && navigator.onLine
 // Until writing-out is set up, the recording's chip says so; nothing else nags.
 function writeOut() {
   const opts = { ask: askServer, canAsk: canAskServer, onRows: (rows) => applyRemote(rows) };
-  return Promise.all([writeOutPending({ ...opts, draft: { context: draftContext, deliver: deliverDraft } }), snapshotPending(opts), sendPending({ send: sendTask, canSend: canSendTask })]);
+  return Promise.all([writeOutPending({ ...opts, draft: { context: draftContext, deliver: deliverDraft } }), snapshotPending(opts), meetingPending({ ...opts, ...meetingOpts }), sendPending({ send: sendTask, canSend: canSendTask })]);
+}
+// Meetings: your tasks go to Daybook in the meeting's area (Business, Filmmaking).
+const daybookAreas = () => (window.__areas ? window.__areas() : sync.user && sync.backend?.areas ? sync.backend.areas() : null);
+const meetingOpts = {
+  me: () => sync.user?.user_metadata?.full_name || sync.user?.user_metadata?.name || '',
+  areas: daybookAreas,
+  base: () => location.origin + location.pathname,
+  sendPending: () => sendPending({ send: sendTask, canSend: canSendTask }),
+  onDone: (it, notes) => {
+    const sent = notes.tasks.filter((t) => mine(t.owner, meetingOpts.me())).length;
+    toast(`Meeting notes ready: ${notes.title}${sent ? ` (${sent} task${sent === 1 ? '' : 's'} to Daybook)` : ''}`, { label: 'Open', run: () => openEntry(`pg_meet-${it.file}`) });
+  }
+};
+// Ctrl+K: the recording on this line becomes a meeting, or pick a recording file.
+async function makeMeeting() {
+  const id = inNotebook() ? notebook.currentLine() : null;
+  const line = id ? await getEntry(id) : null;
+  if (audioOn(line)) {
+    await notebook.close();
+    await meetingFromLine(line.id);
+    toast(canAskServer() ? 'Writing out the meeting…' : 'It’ll be written out once you’re online and signed in');
+    writeOut();
+    return;
+  }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'audio/*,.m4a,.mp3,.wav,.webm,.ogg,.aac';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    await Promise.all([store.close(editor.state.doc), notebook.close()]);
+    const added = await addMeetingFile(file);
+    if (!added) { toast(`“${file.name}” is over ${Math.round(MAX_BYTES / 1048576)} MB. In Voice Recorder, set Recording quality lower and record again`); return; }
+    await applyRemote(added.rows);
+    await go({ view: 'notebook', pageId: added.line.parent_id, line: added.line.id });
+    toast(canAskServer() ? 'Writing out the meeting…' : 'It’ll be written out once you’re online and signed in');
+    writeOut();
+  });
+  input.click();
+}
+async function fixSpeaker() {
+  const pid = notebook.page?.id;
+  const names = await speakersOn(pid);
+  popMenu(null, names.map((from) => ({ label: from, run: async () => {
+    const to = await askText({ title: `Rename ${from}`, body: 'Every line they said gets the new name.', value: from, ok: 'Rename' });
+    if (!to || to === from) return;
+    await notebook.close();
+    await applyRemote(await renameSpeaker(pid, from, to));
+  } })), menuSpot());
 }
 // Send a line to Daybook, as a task in its Inbox that links back here.
 const sendTask = (task) => (window.__daybook ? window.__daybook(task) : sync.backend.addTask(task));
@@ -3557,7 +3609,9 @@ function landShares() {
   return landing;
 }
 async function landSharesNow() {
-  const added = await takeShares().catch((e) => { console.error(e); return []; });
+  const skipped = [];
+  const added = await takeShares(skipped).catch((e) => { console.error(e); return []; });
+  if (skipped.length) toast(`“${skipped[0]}” is over ${Math.round(MAX_BYTES / 1048576)} MB, too big to keep. For meetings, set Voice Recorder’s Recording quality lower`);
   if (!added.length) return;
   await Promise.all([store.close(editor.state.doc), notebook.close()]);
   await applyRemote(added.flatMap((a) => a.rows));

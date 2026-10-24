@@ -2,7 +2,8 @@ import { putEntries, getEntry, children, getMeta, setMeta, topTags, CLAUDE } fro
 import { withTag } from './capture.js';
 import { entry, tagsIn } from './model.js';
 import { GAP } from './order.js';
-import { addFile } from './files.js';
+import { addFile, isAudio } from './files.js';
+import { queueMeeting } from './meeting.js';
 
 // Share into Inkwell: from Chrome, Instagram, Pinterest or any Android app,
 // Share, then Inkwell. The phone hands the shared page, picture or text to
@@ -66,12 +67,13 @@ const blankFields = { done: false, gather: null, gathered: null, mirror: null };
 // Puts one share on today's page: the picture(s), the link under its name and
 // any words that came with it, then an empty line under it to write on.
 // Returns { line, spark, rows }.
-export async function addShare(share, day = today()) {
+export async function addShare(share, day = today(), skipped = []) {
   const { link, name, words } = readShare(share);
   const files = [];
   for (const f of share.files || []) {
-    const row = await addFile(f instanceof File ? f : new File([f.blob], f.name || 'Shared', { type: f.type }));
-    if (row) files.push(row);
+    const file = f instanceof File ? f : new File([f.blob], f.name || 'Shared', { type: f.type });
+    const row = await addFile(file);
+    if (row) files.push(row); else skipped.push(file.name);
   }
   if (!link && !name && !words && !files.length) return null;
   const content = files.map(fileNode);
@@ -92,18 +94,22 @@ export async function addShare(share, day = today()) {
   const spark = entry('line', { parent_id: line.id, sort: GAP, fields: { ...blankFields } });
   rows.push(line, ...files, spark);
   await putEntries([...rows.filter((r) => !files.includes(r))]);
+  // A shared recording is written out: a meeting becomes a meeting page, one voice an idea.
+  const audio = files.find((f) => isAudio(f.fields.type));
+  if (audio) await queueMeeting({ line: line.id, file: audio.id, wrote: text, at: Date.now() });
   if (link) await queue({ line: line.id, url: link, named: namesPage(share.title, link), picture: files.some((f) => /^image\//.test(f.fields.type)), wrote: text, at: Date.now() });
   return { line, spark, rows };
 }
 
 // Everything shared since the app last looked, oldest first.
-export async function takeShares() {
+// Files too big to keep are named in `skipped`.
+export async function takeShares(skipped = []) {
   let inbox;
   try { inbox = await takeInbox(); } catch { return []; }
   const out = [];
   for (const s of inbox.all.sort((a, b) => a.at - b.at)) {
     try {
-      const added = await addShare(s, today());
+      const added = await addShare(s, today(), skipped);
       if (added) out.push(added);
     } catch (e) { console.error(e); continue; }
     await inbox.done(s.at);
